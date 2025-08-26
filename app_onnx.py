@@ -10,6 +10,53 @@ from sys import exit
 import gradio as gr
 import numpy as np
 import onnxruntime as rt
+# ===== 最终版 ORT 设备补丁（稳 & 可选 CoreML） =====
+# 说明：
+# - 默认只用 CPU；若设置环境变量 USE_COREML=1 且可用，则优先 CoreML + CPU。
+# - 无论调用方怎么传 device_type/providers，都强制落到我们选的后端。
+import os
+
+def _pick_providers():
+    avail = set(rt.get_available_providers())
+    want = []
+    if os.getenv("USE_COREML", "0") == "1" and "CoreMLExecutionProvider" in avail:
+        want.append("CoreMLExecutionProvider")
+    if "CPUExecutionProvider" in avail:
+        want.append("CPUExecutionProvider")
+    if not want:
+        # 理论上不会发生；兜底仍返回 CPU
+        want = ["CPUExecutionProvider"]
+    return want
+
+_FORCE_PROVIDERS = _pick_providers()
+_FORCE_DEVICE    = "cpu"  # OrtValue 统一在 CPU 内存上创建，CoreML 也只接受 CPU host tensors
+
+# 1) 强制 InferenceSession 使用我们选定的 providers
+_OrigSession = rt.InferenceSession
+def _PatchedSession(*args, **kwargs):
+    kwargs["providers"] = _FORCE_PROVIDERS
+    return _OrigSession(*args, **kwargs)
+rt.InferenceSession = _PatchedSession
+
+# 2) OrtValue 工厂函数强制 device_type
+_ov = rt.OrtValue
+
+_orig_from_numpy = _ov.ortvalue_from_numpy
+def _cpu_from_numpy(*args, **kwargs):
+    kwargs["device_type"] = _FORCE_DEVICE
+    return _orig_from_numpy(*args, **kwargs)
+_ov.ortvalue_from_numpy = staticmethod(_cpu_from_numpy)
+
+_orig_from_shape = _ov.ortvalue_from_shape_and_type
+def _cpu_from_shape_and_type(*args, **kwargs):
+    kwargs["device_type"] = _FORCE_DEVICE
+    return _orig_from_shape(*args, **kwargs)
+_ov.ortvalue_from_shape_and_type = staticmethod(_cpu_from_shape_and_type)
+
+# 可选：启动时打印实际 providers，方便你确认没有走到 CUDA 幻觉
+print("ONNXRuntime providers ->", _FORCE_PROVIDERS)
+# ===== 补丁结束 =====
+
 import requests
 import tqdm
 from packaging import version
@@ -606,15 +653,15 @@ if __name__ == "__main__":
     app = gr.Blocks()
     with app:
         gr.Markdown("<h1 style='text-align: center; margin-bottom: 1rem'>Midi Composer</h1>")
-        gr.Markdown("![Visitors](https://api.visitorbadge.io/api/visitors?path=skytnt.midi-composer&style=flat)\n\n"
-                    "Midi event transformer for music generation\n\n"
-                    "Demo for [SkyTNT/midi-model](https://github.com/SkyTNT/midi-model)\n\n"
-                    "[Open In Colab]"
-                    "(https://colab.research.google.com/github/SkyTNT/midi-model/blob/main/demo.ipynb)"
-                    " for faster running and longer generation\n\n"
-                    "**Update v1.3**: MIDITokenizerV2 and new MidiVisualizer\n\n"
-                    "The current **best** model: generic pretrain model (tv2o-medium) by skytnt"
-                    )
+        # gr.Markdown("![Visitors](https://api.visitorbadge.io/api/visitors?path=skytnt.midi-composer&style=flat)\n\n"
+        #             "Midi event transformer for music generation\n\n"
+        #             "Demo for [SkyTNT/midi-model](https://github.com/SkyTNT/midi-model)\n\n"
+        #             "[Open In Colab]"
+        #             "(https://colab.research.google.com/github/SkyTNT/midi-model/blob/main/demo.ipynb)"
+        #             " for faster running and longer generation\n\n"
+        #             "**Update v1.3**: MIDITokenizerV2 and new MidiVisualizer\n\n"
+        #             "The current **best** model: generic pretrain model (tv2o-medium) by skytnt"
+        #             )
         js_msg = gr.Textbox(elem_id="msg_receiver", visible=False)
         js_msg.change(None, [js_msg], [], js="""
         (msg_json) =>{
@@ -693,6 +740,7 @@ if __name__ == "__main__":
             input_top_p = gr.Slider(label="top p", minimum=0.1, maximum=1, step=0.01, value=0.94)
             input_top_k = gr.Slider(label="top k", minimum=1, maximum=128, step=1, value=20)
             input_allow_cc = gr.Checkbox(label="allow midi cc event", value=True)
+            # change true to false for faster generation
             input_render_audio = gr.Checkbox(label="render audio after generation", value=True)
             example3 = gr.Examples([[1, 0.94, 128], [1, 0.98, 20], [1, 0.98, 12]],
                                    [input_temp, input_top_p, input_top_k])
@@ -741,3 +789,6 @@ if __name__ == "__main__":
         exit(-1)
     finally:
         thread_pool.shutdown()
+
+
+# print("providers:", sess0.get_providers())
