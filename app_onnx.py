@@ -66,6 +66,14 @@ from midi_synthesizer import MidiSynthesizer
 from midi_tokenizer import MIDITokenizer
 
 VERSION = "v1.3.5"
+# ------------------------------------------
+# Globals for external use
+model_base = None
+model_token = None
+tokenizer = None
+providers = None
+device = None
+
 MAX_SEED = np.iinfo(np.int32).max
 
 rt.set_default_logger_severity(3)
@@ -547,6 +555,41 @@ patch2number = {v: k for k, v in MIDI.Number2patch.items()}
 drum_kits2number = {v: k for k, v in number2drum_kits.items()}
 key_signatures = ['C♭', 'A♭m', 'G♭', 'E♭m', 'D♭', 'B♭m', 'A♭', 'Fm', 'E♭', 'Cm', 'B♭', 'Gm', 'F', 'Dm',
                   'C', 'Am', 'G', 'Em', 'D', 'Bm', 'A', 'F♯m', 'E', 'C♯m', 'B', 'G♯m', 'F♯', 'D♯m', 'C♯', 'A♯m']
+
+# ------------------------------------------
+def init_model(
+    model_config_path="models/default/config.json",
+    model_base_path="models/default/model_base.onnx",
+    model_token_path="models/default/model_token.onnx",
+    model_config_url="https://huggingface.co/skytnt/midi-model-tv2o-medium/resolve/main/config.json",
+    model_base_url="https://huggingface.co/skytnt/midi-model-tv2o-medium/resolve/main/onnx/model_base.onnx",
+    model_token_url="https://huggingface.co/skytnt/midi-model-tv2o-medium/resolve/main/onnx/model_token.onnx",
+):
+    """
+    Initialize and return (model_base, model_token, tokenizer) for external realtime scripts.
+    Does not launch Gradio. Uses the same provider patch (CPU/CoreML) you already applied.
+    """
+    global model_base, model_token, tokenizer, providers, device
+
+    # Download artifacts if missing (same logic as your main)
+    if model_config_path.endswith(".json"):
+        download_if_not_exit(model_config_url, model_config_path)
+    download_if_not_exit(model_base_url, model_base_path)
+    download_if_not_exit(model_token_url, model_token_path)
+
+    # Providers/device follow your top-level ORT patch (forced to CPU or CoreML+CPU)
+    providers = _FORCE_PROVIDERS
+    device = _FORCE_DEVICE  # used by your OrtValue factory; patched to CPU anyway
+
+    # Create tokenizer and sessions
+    tokenizer = get_tokenizer(model_config_path)
+    model_base = rt.InferenceSession(model_base_path, providers=providers)
+    model_token = rt.InferenceSession(model_token_path, providers=providers)
+
+    return model_base, model_token, tokenizer
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
